@@ -1,7 +1,7 @@
 package main
 
 import (
-	"container/list"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -9,83 +9,89 @@ import (
 )
 
 type throttler struct {
-	window FixedWindowInterval
-	queue  list.List
-	f      <-chan struct{}
-	limit  int
-	count  int
-	mux    sync.Mutex
+	roundTripper http.RoundTripper
+	limit        int
+	interval     time.Duration
+	methods      []string
+	urlPrefixes  []string
+	exceptions   []string
+	fastReturn   bool
+	queue        Queue
+	count        int
+	mux          sync.Mutex
 }
 
-func NewThrottler(limit int, interval int) *throttler {
-	var window FixedWindowInterval
-	f := make(chan struct{}, limit)
-	window.interval = time.Second * 4
+func NewThrottler(roundTripper http.RoundTripper, limit int, interval time.Duration, methods, urlPrefixes, exceptions []string, fastReturn bool) *throttler {
 	t := &throttler{
-		limit:  limit,
-		window: window,
-		f:      f,
+		roundTripper: roundTripper,
+		limit:        limit,
+		interval:     interval,
+		methods:      methods,
+		urlPrefixes:  urlPrefixes,
+		exceptions:   exceptions,
+		fastReturn:   fastReturn,
+		queue:        *NewQueue(limit),
 	}
 	go t.run()
 	return t
 }
 
-type FixedWindowInterval struct {
-	startTime time.Time
-	endTime   time.Time
-	interval  time.Duration
-}
-
-func (w *FixedWindowInterval) setWindowTime() {
-	w.startTime = time.Now().UTC()
-	w.endTime = time.Now().UTC().Add(w.interval)
-}
-
 func (t *throttler) run() {
 	go func() {
-		ticker := time.NewTicker(t.window.interval)
-		t.window.setWindowTime()
+		ticker := time.NewTicker(t.interval)
 		for range ticker.C {
 			t.releaseRequests()
-			t.window.setWindowTime()
 		}
 	}()
 }
 
 func (t *throttler) releaseRequests() {
 	fmt.Printf("начан вывод из очереди\n")
-
 	t.mux.Lock()
-	length := t.queue.Len()
 	t.count = 0
-	for i := 0; i < t.limit && i < length; i++ {
-		t.queue.Front().Value
-
-		t.queue = t.queue[1:] //сделать потокобезопасно
+	for i := 0; i < t.limit; i++ {
+		reqCh := t.queue.Pop()
+		if reqCh == nil {
+			break
+		}
+		reqCh.Value <- struct{}{}
 		t.count++
 	}
 	t.mux.Unlock()
-
 }
 
-func (t *throttler) RoundTrip(name int) (resp *http.Response, err error) { //?????????
+func (t *throttler) RoundTrip(req *http.Request) (resp *http.Response, err error) { //?????????
 	if t.limit == 0 { //если не удовлетворяет условиям //проверка на префиксы и методы
-		return resp, err
+		return t.roundTripper.RoundTrip(req)
+	}
+	if len(t.methods) != 0 {
+		shouldReturn := true
+		for _, m := range t.methods {
+			if m == req.Method {
+				shouldReturn = false
+				break
+			}
+		}
+		if shouldReturn {
+			return t.roundTripper.RoundTrip(req)
+		}
 	}
 
 	if t.count < t.limit { ///сделать потоко безопасно
 		t.mux.Lock()
 		t.count++
 		t.mux.Unlock()
-		fmt.Printf("Поток выведен без очереди %d\n", name)
 		return resp, err
 	} else {
+		if t.fastReturn {
+			resp.Body.Close()
+			return resp, errors.New("Request limit exceeded\n")
+		}
 		ch := make(chan struct{})
 		t.mux.Lock()
-		t.queue = append(t.queue, ch) //сделать потоко безопасно
+		t.queue.Push(&Node{Value: ch}) //сделать потоко безопасно
 		t.mux.Unlock()
 		<-ch
-		fmt.Printf("Поток выведен из очереди %d\n", name)
 		return resp, err
 	}
 
@@ -93,15 +99,24 @@ func (t *throttler) RoundTrip(name int) (resp *http.Response, err error) { //???
 }
 
 func main() {
-	t := NewThrottler(5, 2)
-
-	for i := 1; i <= 12; i++ {
-		go t.RoundTrip(i * 10)
+	throttled := NewThrottler(
+		http.DefaultTransport,
+		60,
+		time.Minute,                       // 60 rpm
+		[]string{"POST", "PUT", "DELETE"}, // limit only POST, PUT, DELETE requests
+		nil,                               // use for all URLs
+		[]string{"/servers/*/status", "/network/"}, // except servers status and network operations
+		false, // wait on limit
+	)
+	client := http.Client{
+		Transport: throttled,
 	}
-	time.Sleep(4 * time.Second)
-	for i := 1; i <= 12; i++ {
-		t.RoundTrip(i)
-	}
 
-	time.Sleep(20 * time.Second)
+	// ...
+	resp, err := client.Get("http://apidomain.com/network/routes") // no throttling
+	// ...
+	req, _ := http.NewRequest("PUT", "http://apidomain.com/images/reload", nil)
+	resp, err = client.Do(req) // throttling might be used
+	// ...
+	resp, err = client.Get("http://apidomain.com/servers/1337/status?simple=true") // no throttling
 }
