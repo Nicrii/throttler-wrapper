@@ -1,8 +1,8 @@
 package main
 
 import (
+	t "github.com/Nicrii/throttle-wrapper/throttler"
 	"net/http"
-	t "throttle-wrapper/throttler"
 	"time"
 )
 
