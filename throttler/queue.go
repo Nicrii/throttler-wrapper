@@ -1,4 +1,4 @@
-package main
+package throttler
 
 func NewQueue(size int) *Queue {
 	return &Queue{
