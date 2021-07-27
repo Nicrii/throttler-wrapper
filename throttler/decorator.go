@@ -66,24 +66,16 @@ func AppendDecorator(t *Throttler) Decorator {
 				t.mutex.Lock()
 				t.count++
 				t.mutex.Unlock()
-
-				return t.RoundTripper.RoundTrip(req)
+			} else if t.fastReturn {
+				return resp, errors.New("Request limit exceeded\n")
 			} else {
-				if t.fastReturn {
-
-					return resp, errors.New("Request limit exceeded\n")
-				}
-
-				ch := make(chan struct{})
-
 				t.mutex.Lock()
-				t.queue.Push(&Node{Value: ch})
+				t.waiting++
 				t.mutex.Unlock()
-
-				<-ch
-
-				return t.RoundTripper.RoundTrip(req)
 			}
+
+			t.ch <- true
+			return t.RoundTripper.RoundTrip(req)
 		})
 	}
 }
