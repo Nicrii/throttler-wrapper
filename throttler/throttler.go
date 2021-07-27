@@ -14,7 +14,7 @@ type Throttler struct {
 	allowedPrefixes []string
 	exceptions      []string
 	fastReturn      bool
-	ch              chan bool
+	ch              chan struct{}
 	count           int
 	waiting         int
 	mutex           sync.Mutex
@@ -30,7 +30,7 @@ func NewThrottler(roundTripper http.RoundTripper, limit int, interval time.Durat
 		allowedPrefixes: getRegex(urlPrefixes),
 		exceptions:      getRegex(exceptions),
 		fastReturn:      fastReturn,
-		ch:              make(chan bool, limit),
+		ch:              make(chan struct{}, limit),
 	}
 
 	go t.run()

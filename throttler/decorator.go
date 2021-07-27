@@ -74,7 +74,7 @@ func AppendDecorator(t *Throttler) Decorator {
 				t.mutex.Unlock()
 			}
 
-			t.ch <- true
+			t.ch <- struct{}{}
 			return t.RoundTripper.RoundTrip(req)
 		})
 	}
