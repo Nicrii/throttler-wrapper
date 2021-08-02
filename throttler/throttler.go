@@ -19,6 +19,7 @@ type Throttler struct {
 	ch              chan struct{}
 	count           int
 	waiting         int
+	released        int
 	mutex           sync.Mutex
 }
 
@@ -53,15 +54,16 @@ func (t *Throttler) releaseRequests() {
 	t.mutex.Lock()
 	i := 0
 
-	for ; i < t.count; i++ {
+	for ; i < t.count-t.released; i++ {
 		<-t.ch
 	}
 
-	t.count = 0
+	t.count, t.released = 0, 0
 
 	for ; i < t.limit && t.waiting > 0; i++ {
 		t.waiting--
 		<-t.ch
+		t.released++
 		t.count++
 	}
 
