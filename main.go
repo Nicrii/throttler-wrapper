@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	throttler := t.NewThrottler(
+	throttled := t.NewThrottler(
 		http.DefaultTransport,
 		60,
 		time.Minute,                       // 60 rpm
@@ -16,10 +16,6 @@ func main() {
 		[]string{"/servers/*/status", "/network/"}, // except servers status and network operations
 		false, // wait on limit
 	)
-
-	var roundTrip t.Decorator = t.AppendDecorator(throttler)
-
-	throttled := t.Decorate(throttler, []t.Decorator{roundTrip}...)
 
 	client := http.Client{
 		Transport: throttled,

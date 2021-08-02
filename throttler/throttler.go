@@ -1,7 +1,9 @@
 package throttler
 
 import (
+	"errors"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 )
@@ -33,7 +35,7 @@ func NewThrottler(roundTripper http.RoundTripper, limit int, interval time.Durat
 		ch:              make(chan struct{}, limit),
 	}
 
-	go t.run()
+	t.run()
 
 	return t
 }
@@ -49,13 +51,73 @@ func (t *Throttler) run() {
 
 func (t *Throttler) releaseRequests() {
 	t.mutex.Lock()
+	i := 0
+
+	for ; i < t.count; i++ {
+		<-t.ch
+	}
+
 	t.count = 0
 
-	for i := 0; i < t.limit && t.waiting > 0; i++ {
+	for ; i < t.limit && t.waiting > 0; i++ {
 		t.waiting--
 		<-t.ch
 		t.count++
 	}
 
 	t.mutex.Unlock()
+}
+
+func (t *Throttler) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+	if t.limit == 0 {
+		return t.RoundTripper.RoundTrip(req)
+	}
+
+	if len(t.methods) != 0 {
+		shouldReturn := true
+		for _, m := range t.methods {
+			if m == req.Method {
+				shouldReturn = false
+				break
+			}
+		}
+		if shouldReturn {
+			return t.RoundTripper.RoundTrip(req)
+		}
+	}
+
+	for _, exception := range t.exceptions {
+		match, err := regexp.MatchString(exception, req.URL.Path)
+		if err != nil {
+			return resp, err
+		}
+		if match {
+			return t.RoundTripper.RoundTrip(req)
+		}
+	}
+
+	for _, urlPrefix := range t.allowedPrefixes {
+		match, err := regexp.MatchString(urlPrefix, req.URL.Path)
+		if err != nil {
+			return resp, err
+		}
+		if !match {
+			return t.RoundTripper.RoundTrip(req)
+		}
+	}
+
+	if t.count < t.limit {
+		t.mutex.Lock()
+		t.count++
+		t.mutex.Unlock()
+	} else if t.fastReturn {
+		return resp, errors.New("Request limit exceeded\n")
+	} else {
+		t.mutex.Lock()
+		t.waiting++
+		t.mutex.Unlock()
+	}
+
+	t.ch <- struct{}{}
+	return t.RoundTripper.RoundTrip(req)
 }
